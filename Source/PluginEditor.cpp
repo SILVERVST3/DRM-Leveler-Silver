@@ -31,6 +31,13 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
       kHold   ("HOLD",          dual (p, hold)),
       kRec    ("RECOVERY",      dual (p, recovery)),
       kGate   ("GATE RANGE",    dual (p, gate), true),
+      kBoost ("MAX BOOST", single (p, boostMax)),
+      kCut ("MAX CUT", single (p, cutMax)),
+      kMix ("WET MIX", single (p, mix)),
+      kCeiling ("CLIP CEILING", single (p, ceiling)),
+      measureMainBtn ("MEASURE INPUT", single (p, measureInput)),
+      adaptiveBtn ("ADAPTIVE", single (p, adaptive)),
+      osBtn ("4x OVERSAMPLING", single (p, oversample)),
       modeDual   ("DUAL MONO", single (p, mode), 0.0f, true),
       modeStereo ("STEREO",    single (p, mode), 1.0f, true),
       modeMS     ("M/S",       single (p, mode), 2.0f, true),
@@ -48,7 +55,7 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
       scfOnBtn ("SCF",       dual (p, scfOn)),
       bpBtn    ("BAND-PASS", dual (p, scfMode), 0.0f, true),
       bsBtn    ("BAND-STOP", dual (p, scfMode), 1.0f, true),
-      soloBtn  ("S",         dual (p, solo)),
+      soloBtn  ("LISTEN",         dual (p, solo)),
       scBtn    ("SC",        dual (p, sc)),
       softClipBtn ("SOFT CLIP", single (p, softClip)),
       sCurveBtn   ("S-CURVE",   single (p, sCurve)),
@@ -60,7 +67,7 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
     addAndMakeVisible (content);
 
     content.addAndMakeVisible (display);
-    for (auto* k : { &kSens, &kRetrig, &kRange, &kComp, &kHold, &kRec, &kGate })
+    for (auto* k : { &kSens, &kRetrig, &kRange, &kComp, &kHold, &kRec, &kGate, &kBoost, &kCut, &kMix, &kCeiling })
         content.addAndMakeVisible (*k);
     kComp.slider.getProperties().set ("ring", 0.0);
 
@@ -68,7 +75,8 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
              &modeDual, &modeStereo, &modeMS, &btnA, &btnCopy, &btnB, &viewL, &viewSum, &viewR,
              &presetBox, &bypassBtn, &inFader0, &inFader1, &outFader0, &outFader1, &inLinkBtn, &outLinkBtn,
              &inCh0, &inCh1, &outCh0, &outCh1, &scfOnBtn, &bpBtn, &bsBtn, &soloBtn, &scBtn, &softClipBtn, &sCurveBtn, &scfRange,
-             &scfLoLbl, &scfHiLbl })
+             &scfLoLbl, &scfHiLbl, &measureMainBtn, &adaptiveBtn, &osBtn, &pauseBtn, &zoomOutBtn, &zoomInBtn,
+             &timeLabel, &saveBtn, &loadBtn, &presetStatus, &sidechainStatus })
         content.addAndMakeVisible (c);
     for (int c = 0; c < 2; ++c)
     {
@@ -76,10 +84,10 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
         content.addAndMakeVisible (outMeter[c]);
         for (auto* m : { &inMeter[c], &outMeter[c] })
         {
-            m->setTooltip ("Clique para alternar entre medidor espectral e classico");
+            m->setTooltip ("Click: spectral/classic. Shift-click: reset peak and clip indicator.");
             m->onClick = [this]
             {
-                const bool sp = (bool) proc.apvts.state.getProperty ("spectralMeters", true);
+                const bool sp = (bool) proc.apvts.state.getProperty ("spectralMeters", false);
                 proc.apvts.state.setProperty ("spectralMeters", ! sp, nullptr);
                 refreshAll();
             };
@@ -135,6 +143,7 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
         if (idx < 0) return;
         proc.currentPreset = idx;
         drmpresets::apply (proc.apvts, idx);
+        proc.markPresetClean();
         refreshAll();
     };
 
@@ -156,7 +165,28 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
     sCurveBtn.setTooltip ("Rampas de ataque/recovery em curva S");
     for (auto* b : { &inCh0, &inCh1, &outCh0, &outCh1 })
         b->setTooltip ("Liga/desliga este canal");
-    softClipBtn.setTooltip ("Arredonda picos acima de 0 dBFS");
+    softClipBtn.setTooltip ("Soft knee starts 3 dB below the selected ceiling. Not a true-peak limiter.");
+    measureMainBtn.setTooltip ("Use the sidechain only to detect hits; measure the main input to calculate gain. Off = legacy key measurement.");
+    adaptiveBtn.setTooltip ("Hysteresis re-arms the detector after each onset, reducing duplicate hits.");
+    osBtn.setTooltip ("4x oversampling on the soft clipper reduces aliasing. Latency stays constant.");
+    pauseBtn.setClickingTogglesState (true);
+    pauseBtn.onClick = [this] { display.setPaused (pauseBtn.getToggleState()); };
+    zoomOutBtn.onClick = [this] { display.changeZoom (1); };
+    zoomInBtn.onClick = [this] { display.changeZoom (-1); };
+    saveBtn.onClick = [this] { choosePresetFile (true); };
+    loadBtn.onClick = [this] { choosePresetFile (false); };
+    for (auto* l : { &timeLabel, &presetStatus, &sidechainStatus })
+    {
+        l->setFont (juce::Font (juce::FontOptions (11.0f)));
+        l->setColour (juce::Label::textColourId, silver::navySoft);
+    }
+    timeLabel.setColour (juce::Label::textColourId, silver::lineLt);
+    sidechainStatus.setColour (juce::Label::textColourId, silver::lineLt);
+    timeLabel.setJustificationType (juce::Justification::centred);
+    // The UI is the only FIFO consumer; discard the history queued before opening.
+    DisplayColumn discarded[256];
+    while (proc.readColumns (discarded, 256) > 0) {}
+    proc.analysisEnabled.store (true);
 
     constrainer = std::make_unique<juce::ComponentBoundsConstrainer>();
     constrainer->setFixedAspectRatio ((double) baseW / baseH);
@@ -167,13 +197,17 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
     content.setBounds (0, 0, baseW, baseH);
     layout();
     refreshAll();
-    setSize (baseW, baseH);
+    const int savedWidth = juce::jlimit ((int) (baseW * 0.75), (int) (baseW * 1.8),
+        (int) proc.apvts.state.getProperty ("editorWidth", baseW));
+    setSize (savedWidth, juce::roundToInt (savedWidth * (double) baseH / baseW));
     startTimerHz (30);
 }
 
 DRMLevelerAudioProcessorEditor::~DRMLevelerAudioProcessorEditor()
 {
     stopTimer();
+    proc.analysisEnabled.store (false);
+    proc.spectralEnabled.store (false);
     content.setLookAndFeel (nullptr);
     setLookAndFeel (nullptr);
 }
@@ -182,6 +216,7 @@ void DRMLevelerAudioProcessorEditor::resized()
 {
     const float s = (float) getWidth() / (float) baseW;
     content.setTransform (juce::AffineTransform::scale (s));
+    proc.apvts.state.setProperty ("editorWidth", getWidth(), nullptr);
 }
 
 void DRMLevelerAudioProcessorEditor::layout()
@@ -218,7 +253,7 @@ void DRMLevelerAudioProcessorEditor::layout()
 
     // display e knobs
     display.setBounds (128, 54, 804, 278);
-    const int ky = 344, kh = 160;
+    const int ky = 358, kh = 146;
     int x = 128;
     for (auto* k : { &kSens, &kRetrig, &kRange })  { k->setBounds (x, ky + 22, 104, kh - 30); x += 104; }
     kComp.setBounds (x, ky, 180, kh); x += 180;
@@ -232,22 +267,34 @@ void DRMLevelerAudioProcessorEditor::layout()
     scfLoLbl.setBounds (366, by, 58, bh);
     scfRange.setBounds (426, by - 2, 222, bh + 4);
     scfHiLbl.setBounds (650, by, 62, bh);
-    soloBtn.setBounds  (718, by, 28, bh);
-    scBtn.setBounds    (750, by, 36, bh);
-    softClipBtn.setBounds (800, by, 72, bh);
-    sCurveBtn.setBounds   (876, by, 50, bh);
+    soloBtn.setBounds  (716, by, 54, bh);
+    scBtn.setBounds    (774, by, 36, bh);
+    softClipBtn.setBounds (818, by, 100, bh);
+    sCurveBtn.setBounds (754, 668, 160, 26);
+    pauseBtn.setBounds (140, 302, 60, 22);
+    zoomOutBtn.setBounds (206, 302, 25, 22);
+    timeLabel.setBounds (233, 302, 68, 22);
+    zoomInBtn.setBounds (303, 302, 25, 22);
+    sidechainStatus.setBounds (342, 302, 280, 22);
+    kBoost.setBounds (142, 620, 100, 106);
+    kCut.setBounds (250, 620, 100, 106);
+    kMix.setBounds (358, 620, 100, 106);
+    kCeiling.setBounds (466, 620, 100, 106);
+    measureMainBtn.setBounds (584, 628, 160, 26);
+    adaptiveBtn.setBounds (754, 628, 160, 26);
+    osBtn.setBounds (584, 668, 160, 26);
+    saveBtn.setBounds (584, 708, 64, 24);
+    loadBtn.setBounds (654, 708, 64, 24);
+    presetStatus.setBounds (730, 708, 190, 24);
 }
 
 void DRMLevelerAudioProcessorEditor::paintContent (juce::Graphics& g)
 {
     auto r = content.getLocalBounds().toFloat();
-    juce::ColourGradient bg (silver::bgTop, 0, 0, silver::bgBot, 0, r.getBottom(), false);
-    g.setGradientFill (bg);
-    g.fillAll();
+    g.fillAll (silver::bgTop);
 
     // faixa do cabecalho
-    juce::ColourGradient hg (juce::Colours::white.withAlpha (0.7f), 0, 0, silver::panelDk, 0, 48, false);
-    g.setGradientFill (hg);
+    g.setColour (silver::panel);
     g.fillRect (0.0f, 0.0f, r.getWidth(), 48.0f);
     g.setColour (silver::edge);
     g.drawHorizontalLine (48, 0, r.getWidth());
@@ -269,8 +316,7 @@ void DRMLevelerAudioProcessorEditor::paintContent (juce::Graphics& g)
 
     auto panelAt = [&] (juce::Rectangle<float> p)
     {
-        juce::ColourGradient pg (silver::panel, p.getX(), p.getY(), silver::panelDk, p.getX(), p.getBottom(), false);
-        g.setGradientFill (pg);
+        g.setColour (silver::panel);
         g.fillRoundedRectangle (p, 6.0f);
         g.setColour (silver::edge);
         g.drawRoundedRectangle (p, 6.0f, 1.0f);
@@ -278,6 +324,7 @@ void DRMLevelerAudioProcessorEditor::paintContent (juce::Graphics& g)
     panelAt ({ 10, 54, 108, 534 });
     panelAt ({ 942, 54, 108, 534 });
     panelAt ({ 128, 338, 804, 172 });
+    panelAt ({ 128, 598, 804, 146 });
     panelAt ({ 128, 518, 804, 70 });
 
     g.setColour (silver::navy);
@@ -288,15 +335,20 @@ void DRMLevelerAudioProcessorEditor::paintContent (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
     g.setColour (silver::navySoft);
     g.drawText ("SIDE-CHAIN FILTER / DETECTION", 138, 524, 300, 14, juce::Justification::centredLeft);
-    g.drawText ("OUTPUT", 800, 524, 120, 14, juce::Justification::centredLeft);
+    g.drawText ("CLIPPER", 818, 524, 100, 14, juce::Justification::centredLeft);
+    g.drawText ("DETECTION", 140, 344, 190, 14, juce::Justification::centredLeft);
+    g.drawText ("LEVELING", 346, 344, 270, 14, juce::Justification::centred);
+    g.drawText ("ENVELOPE", 630, 344, 290, 14, juce::Justification::centred);
+    g.drawText ("GAIN LIMITS / PARALLEL / QUALITY", 140, 604, 420, 14, juce::Justification::centredLeft);
+    g.drawText ("FINAL L/R", 942, 594, 108, 14, juce::Justification::centred);
 }
 
 void DRMLevelerAudioProcessorEditor::refreshAll()
 {
-    for (auto* k : { &kSens, &kRetrig, &kRange, &kComp, &kHold, &kRec, &kGate }) k->refresh();
+    for (auto* k : { &kSens, &kRetrig, &kRange, &kComp, &kHold, &kRec, &kGate, &kBoost, &kCut, &kMix, &kCeiling }) k->refresh();
     for (auto* b : { &modeDual, &modeStereo, &modeMS, &bypassBtn, &inLinkBtn, &outLinkBtn,
                      &inCh0, &inCh1, &outCh0, &outCh1,
-                     &scfOnBtn, &bpBtn, &bsBtn, &soloBtn, &scBtn, &softClipBtn, &sCurveBtn })
+                     &scfOnBtn, &bpBtn, &bsBtn, &soloBtn, &scBtn, &softClipBtn, &sCurveBtn, &measureMainBtn, &adaptiveBtn, &osBtn })
         b->refresh();
     for (auto* f : { &inFader0, &inFader1, &outFader0, &outFader1 }) f->refresh();
 
@@ -322,7 +374,7 @@ void DRMLevelerAudioProcessorEditor::refreshAll()
     // botoes de canal: L/R ou M/S
     for (auto* b : { &inCh0, &outCh0 }) b->setButtonText (ms ? "M" : "L");
     for (auto* b : { &inCh1, &outCh1 }) { b->setButtonText (ms ? "S" : "R"); b->setEnabled (! mono); }
-    const bool spectral = (bool) proc.apvts.state.getProperty ("spectralMeters", true);
+    const bool spectral = (bool) proc.apvts.state.getProperty ("spectralMeters", false);
     for (int c = 0; c < 2; ++c)
     {
         inMeter[c].setSpectral (spectral);
@@ -330,14 +382,18 @@ void DRMLevelerAudioProcessorEditor::refreshAll()
     }
     inMeter[0].setChannelOn (inCh0.isOn());
     inMeter[1].setChannelOn (inCh1.isOn());
-    outMeter[0].setChannelOn (outCh0.isOn());
-    outMeter[1].setChannelOn (outCh1.isOn());
+    outMeter[0].setChannelOn (ms || outCh0.isOn());
+    outMeter[1].setChannelOn (ms || outCh1.isOn());
 
     btnA.setToggleState (proc.getABSlot() == 0, juce::dontSendNotification);
     btnB.setToggleState (proc.getABSlot() == 1, juce::dontSendNotification);
     btnCopy.setButtonText (proc.getABSlot() == 0 ? "A>B" : "B>A");
 
     scBtn.setAlpha (proc.hasSidechain() ? 1.0f : 0.45f);
+    sidechainStatus.setText (scBtn.isOn() ? (proc.hasSidechain() ? "KEY: EXTERNAL CONNECTED" : "KEY: EXTERNAL UNAVAILABLE / INTERNAL") : "KEY: INTERNAL", juce::dontSendNotification);
+    timeLabel.setText (juce::String (display.getWindowSeconds(), 1) + " s", juce::dontSendNotification);
+    presetStatus.setText (proc.isPresetModified() ? "PRESET MODIFIED *" : "PRESET SAVED", juce::dontSendNotification);
+    proc.spectralEnabled.store (spectral);
 
     // SCF
     if (! scfDragging)
@@ -403,4 +459,46 @@ void DRMLevelerAudioProcessorEditor::timerCallback()
 
     refreshAll();
     display.repaint();
+}
+
+void DRMLevelerAudioProcessorEditor::choosePresetFile (bool save)
+{
+    const auto folder = juce::File::getSpecialLocation (juce::File::userApplicationDataDirectory)
+        .getChildFile ("SilverAudio/DRMLeveler/Presets");
+    folder.createDirectory();
+    fileChooser = std::make_unique<juce::FileChooser> (save ? "Save SILVER preset" : "Load SILVER preset",
+        folder.getChildFile ("My preset.drmpreset"), "*.drmpreset");
+    const int chooserFlags = save ? (juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles | juce::FileBrowserComponent::warnAboutOverwriting)
+                           : (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles);
+    const juce::Component::SafePointer<DRMLevelerAudioProcessorEditor> safe (this);
+    fileChooser->launchAsync (chooserFlags, [safe, save] (const juce::FileChooser& chooser)
+    {
+        if (safe == nullptr) return;
+        auto file = chooser.getResult();
+        if (file == juce::File()) return;
+        bool ok = false;
+        if (save)
+        {
+            file = file.withFileExtension ("drmpreset");
+            safe->proc.markPresetClean();
+            juce::MemoryBlock data; safe->proc.getStateInformation (data);
+            ok = file.replaceWithData (data.getData(), data.getSize());
+        }
+        else
+        {
+            juce::MemoryBlock data;
+            if (file.loadFileAsData (data))
+            {
+                const auto xml = juce::AudioProcessor::getXmlFromBinary (data.getData(), (int) data.getSize());
+                if (xml != nullptr && xml->hasTagName (safe->proc.apvts.state.getType()))
+                {
+                    safe->proc.setStateInformation (data.getData(), (int) data.getSize());
+                    safe->proc.markPresetClean(); ok = true;
+                }
+            }
+        }
+        if (! ok) juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon,
+            "Preset", save ? "Could not save this preset." : "Invalid or unreadable SILVER preset.");
+        safe->refreshAll();
+    });
 }

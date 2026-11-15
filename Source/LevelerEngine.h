@@ -111,6 +111,8 @@ namespace drm
         float hiThr = 0, loThr = -40, target = -12;
         float comp = 0.5f;          // -1 .. +1
         float rangeDb = 24;
+        float boostLimit = 80, cutLimit = 80;
+        bool adaptive = false;
         float retrigMs = 23, holdMs = 85, recMs = 630;
         float sens = 0.5f;          // 0 .. 1
         float gateDb = 0;
@@ -131,7 +133,7 @@ namespace drm
             reset();
         }
 
-        void reset() { fast = slow = 0; since = 1 << 28; measuring = false; peak = 0; left = 0; }
+        void reset() { fast = slow = 0; since = 1 << 28; measuring = false; peak = inputPeak = 0; left = 0; armed = true; }
 
         void setParams (const ChannelParams& p)
         {
@@ -141,13 +143,14 @@ namespace drm
             floorDb = -45.0f - 35.0f * p.sens;       // -45 .. -80 dBFS
             // nao vale a pena "armar" o detector em sinais muito abaixo do Low Threshold
             floorDb = std::max (floorDb, p.loThr - 18.0f);
-            loThr = p.loThr;
+            loThr = p.loThr; adaptive = p.adaptive;
         }
 
         // a = |amostra de deteccao|. Retorna true quando uma batida foi finalizada
         // (fim da janela de medicao); levelDb recebe o pico da batida.
-        inline bool push (float a, float& levelDb)
+        inline bool push (float a, float& levelDb, float inputAmplitude = 0.0f)
         {
+            const float previousFast = fast;
             fast = a > fast ? a : fast * relFast;
             slow += (fast - slow) * kSlow;
             if (since < (1 << 28)) ++since;
@@ -155,34 +158,45 @@ namespace drm
             if (measuring)
             {
                 peak = std::max (peak, a);
+                inputPeak = std::max (inputPeak, inputAmplitude);
                 if (--left <= 0)
                 {
                     measuring = false; levelDb = gainToDb (peak);
+                    lastInputDb = gainToDb (inputPeak);
                     // batida abaixo do Low Threshold (ruido/vazamento): nao consome o
                     // tempo de Min Retrigger, o detector re-arma imediatamente
-                    if (levelDb < loThr) since = retrigSamples;
+                    if (levelDb < loThr) { since = retrigSamples; armed = true; }
                     return true;
                 }
                 return false;
             }
 
+            const float fdb = gainToDb (fast);
+            const float contrast = fdb - gainToDb (slow + 1.0e-9f);
+            // Hysteresis prevents a sustained onset from re-triggering. Falling
+            // below the floor also re-arms isolated, very soft hits.
+            if (contrast < onsetDb * 0.45f || fdb < floorDb || (adaptive && a < fast * 0.5f)) armed = true;
+            const float onsetContrast = adaptive ? gainToDb (a) - gainToDb (previousFast + 1.0e-9f) : contrast;
+            const float onsetLevel = adaptive ? gainToDb (a) : fdb;
             if (since >= retrigSamples)
             {
-                const float fdb = gainToDb (fast);
-                if (fdb > floorDb && fdb - gainToDb (slow + 1.0e-9f) > onsetDb)
+                if ((! adaptive || armed) && onsetLevel > floorDb && onsetContrast > onsetDb)
                 {
-                    measuring = true; left = W; peak = a; since = 0;
+                    measuring = true; left = W; peak = a; inputPeak = inputAmplitude; since = 0; armed = false;
                 }
             }
             return false;
         }
+
+        float measuredInputDb() const { return lastInputDb; }
 
         bool isMeasuring() const { return measuring; }
 
     private:
         double sr = 44100; int W = 256;
         float relFast = 0.999f, kSlow = 0.001f;
-        float fast = 0, slow = 0, peak = 0;
+        float fast = 0, slow = 0, peak = 0, inputPeak = 0, lastInputDb = -180;
+        bool armed = true, adaptive = false;
         int since = 0, left = 0, retrigSamples = 1000;
         bool measuring = false;
         float onsetDb = 8, floorDb = -60, loThr = -40;
@@ -205,8 +219,16 @@ namespace drm
 
         void setParams (const ChannelParams& p)
         {
-            holdN = (int) (p.holdMs * 0.001 * sr);
-            recN  = (int) (p.recMs * 0.001 * sr);
+            const int newHold = std::max (0, (int) (p.holdMs * 0.001 * sr));
+            const int newRec = std::max (0, (int) (p.recMs * 0.001 * sr));
+            // Automation restarts the remaining recovery from the current gain.
+            // It must never extrapolate using elapsed samples / a shorter time.
+            if (stage == Recovery && (newRec != recN || p.gateDb != gate || p.sCurve != sCurve))
+            {
+                from = cur; n = 0;
+                remainingRec = std::max (1, newRec);
+            }
+            holdN = newHold; recN = newRec;
             gate = p.gateDb; sCurve = p.sCurve;
         }
 
@@ -226,14 +248,13 @@ namespace drm
                 }
                 case Hold:
                     cur = to;
-                    if (++n >= holdN) { stage = Recovery; n = 0; from = to; }
+                    if (++n >= holdN) { stage = Recovery; n = 0; from = to; remainingRec = std::max (1, recN); }
                     break;
                 case Recovery:
-                    if (recN <= 0) { cur = gate; stage = Idle; break; }
                     {
-                        const float t = (float) (n + 1) / (float) recN;
+                        const float t = std::min (1.0f, (float) (n + 1) / (float) remainingRec);
                         cur = from + (gate - from) * shape (t);
-                        if (++n >= recN) stage = Idle;
+                        if (++n >= remainingRec) stage = Idle;
                     }
                     break;
             }
@@ -249,7 +270,7 @@ namespace drm
         double sr = 44100; int A = 64;
         Stage stage = Idle;
         float cur = 0, from = 0, to = 0, gate = 0, kIdle = 0.01f;
-        int n = 0, holdN = 0, recN = 0;
+        int n = 0, holdN = 0, recN = 0, remainingRec = 1;
         bool sCurve = false;
     };
 
@@ -258,16 +279,16 @@ namespace drm
     //  retorna false se a batida ficou abaixo do Low Threshold (nao e batida)
     //  ignored = true se ficou acima do High Threshold (passa sem processar)
     // -------------------------------------------------------------------------
-    inline bool computeBeatGain (const ChannelParams& p, float levelDb, float& gainDb, bool& ignored)
+    inline bool computeBeatGain (const ChannelParams& p, float levelDb, float& gainDb, bool& ignored, float measuredDb = NAN)
     {
         ignored = false;
         if (levelDb < p.loThr) return false;
         if (levelDb > p.hiThr) { ignored = true; gainDb = 0; return true; }
-        const float d = p.target - levelDb;      // distancia ate o alvo
+        const float d = p.target - (std::isfinite (measuredDb) ? measuredDb : levelDb);      // distancia ate o alvo
         // comp > 0: compressao (puxa para o alvo). comp < 0: expansao (afasta do alvo)
         // ex.: comp = -100%, batida 6 dB acima do alvo -> d = -6 -> g = +6 -> 12 dB acima
         float g = d * p.comp;
-        g = std::clamp (g, -p.rangeDb, p.rangeDb);
+        g = std::clamp (g, -std::min (p.rangeDb, p.cutLimit), std::min (p.rangeDb, p.boostLimit));
         gainDb = g;
         return true;
     }

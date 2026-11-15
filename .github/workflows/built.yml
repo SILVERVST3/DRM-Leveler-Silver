@@ -1,30 +1,41 @@
-name: Build DRM_Leveler SILVER (Windows VST3)
+name: Build and test DRM Leveler SILVER
 
 on:
   push:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build-windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
-
       - name: Configure
-        run: cmake -B build -G "Visual Studio 17 2022" -A x64
-
+        run: cmake -B build -G "Visual Studio 17 2022" -A x64 -DDRM_BUILD_TESTS=ON
       - name: Build
-        run: cmake --build build --config Release --parallel
-
+        run: cmake --build build --config Release --parallel 2
+      - name: DSP and processor regression tests
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: Render editor preview
+        run: ./build/Release/DRMProcessorTests.exe --render "${{ github.workspace }}/preview.png"
+      - name: Upload editor preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: DRM_Leveler_SILVER-Editor-Preview
+          path: preview*.png
+          if-no-files-found: error
       - name: Upload VST3
         uses: actions/upload-artifact@v4
         with:
           name: DRM_Leveler_SILVER-VST3-Windows
           path: build/DRMLevelerSILVER_artefacts/Release/VST3/
-
+          if-no-files-found: error
       - name: Upload Standalone
         uses: actions/upload-artifact@v4
         with:
           name: DRM_Leveler_SILVER-Standalone-Windows
           path: build/DRMLevelerSILVER_artefacts/Release/Standalone/
+          if-no-files-found: error

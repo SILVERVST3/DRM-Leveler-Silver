@@ -5,20 +5,25 @@
 //  Display rolante: entrada (cinza), boost (laranja), reducao (azul), saida
 //  (branco), marcadores de batida e as 3 linhas arrastaveis HI / LO / TARGET.
 // =============================================================================
-class WaveDisplay : public juce::Component
+class WaveDisplay : public juce::Component, public juce::SettableTooltipClient
 {
 public:
     WaveDisplay (DRMLevelerAudioProcessor& p, DualSource& hiS, DualSource& loS, DualSource& tgS, DualSource& gateS)
         : proc (p), hi (hiS), lo (loS), tg (tgS), gate (gateS)
     {
-        hist.resize (2048);
+        hist.resize (8192);
     }
 
     void push (const DisplayColumn* cols, int n)
     {
+        if (paused) return;
         for (int i = 0; i < n; ++i) { hist[(size_t) w] = cols[i]; w = (w + 1) % (int) hist.size(); }
         if (n > 0) repaint();
     }
+
+    void setPaused (bool value) { paused = value; }
+    void changeZoom (int delta) { zoom = juce::jlimit (0, 3, zoom + delta); repaint(); }
+    double getWindowSeconds() const { return plotArea().getWidth() * (1 << zoom) * 0.005; }
 
     void paint (juce::Graphics& g) override
     {
@@ -41,10 +46,26 @@ public:
 
         const bool linked = proc.isStereoLinked();
         const int view = linked ? 1 : proc.getView();
-        const int N = juce::jmin ((int) r.getWidth(), (int) hist.size());
+        const int stride = 1 << zoom;
+        const int N = juce::jmin ((int) r.getWidth(), (int) hist.size() / stride);
         const int Nh = (int) hist.size();
 
-        auto colAt = [&] (int k) -> const DisplayColumn& { return hist[(size_t) ((w - 1 - k + 2 * Nh) % Nh)]; };
+        auto colAt = [&] (int k)
+        {
+            DisplayColumn combined;
+            for (int j = 0; j < stride; ++j)
+            {
+                const auto& c = hist[(size_t) ((w - 1 - k * stride - j + 2 * Nh) % Nh)];
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    combined.in[ch] = juce::jmax (combined.in[ch], c.in[ch]);
+                    combined.out[ch] = juce::jmax (combined.out[ch], c.out[ch]);
+                    if (std::abs (c.gain[ch]) > std::abs (combined.gain[ch])) combined.gain[ch] = c.gain[ch];
+                    if (c.beat[ch]) { combined.beat[ch] = c.beat[ch]; combined.beatDb[ch] = c.beatDb[ch]; }
+                }
+            }
+            return combined;
+        };
         auto pick = [&] (const float* v) { return view == 1 ? juce::jmax (v[0], v[1]) : v[view == 0 ? 0 : 1]; };
         auto pickGain = [&] (const DisplayColumn& c)
         {
@@ -124,6 +145,10 @@ public:
         drawLine (g, r, tg.get(), silver::orange, "TARGET LVL", false, hover == 2 || drag == 2);
         g.restoreState();
 
+        g.setFont (juce::Font (juce::FontOptions (10.0f)));
+        g.setColour (silver::lineLt);
+        g.drawText ("GRAY: INPUT   WHITE: LEVELER OUT   ORANGE: BOOST   BLUE: CUT", 12, 4, getWidth() - 24, 14,
+                    juce::Justification::centredLeft);
         // indicadores
         g.setFont (juce::Font (juce::FontOptions (11.0f, juce::Font::bold)));
         const float gr = gate.get();
@@ -134,7 +159,7 @@ public:
                         juce::Justification::centredLeft);
         }
         g.setColour (silver::lineLt.withAlpha (0.55f));
-        const char* names[3] = { proc.getMode() == drmp::MidSide ? "MID" : "LEFT", "SUM",
+        const char* names[3] = { proc.getMode() == drmp::MidSide ? "MID" : "LEFT", "BOTH / PEAK",
                                  proc.getMode() == drmp::MidSide ? "SIDE" : "RIGHT" };
         g.drawText (linked ? "STEREO" : names[view], juce::Rectangle<float> (r.getCentreX() - 50, r.getY() + 2, 100, 14),
                     juce::Justification::centred);
@@ -146,6 +171,16 @@ public:
     // ---- mouse: arrastar linhas ----
     void mouseMove (const juce::MouseEvent& e) override
     {
+        const auto area = plotArea();
+        if (area.contains (e.position))
+        {
+            const int k = juce::jlimit (0, (int) hist.size() - 1,
+                (int) (area.getRight() - e.position.x) * (1 << zoom));
+            const auto& c = hist[(size_t) ((w - 1 - k + 2 * (int) hist.size()) % (int) hist.size())];
+            const int channel = proc.getView() == 2 ? 1 : 0;
+            setTooltip (juce::String (k * 0.005, 2) + " s ago | Gain " + juce::String (c.gain[channel], 1)
+                + " dB" + (c.beat[channel] ? " | Hit " + juce::String (c.beatDb[channel], 1) + " dBFS" : ""));
+        }
         const int h = hit (e.position.y);
         if (h != hover) { hover = h; repaint(); }
         setMouseCursor (h >= 0 ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
@@ -183,7 +218,7 @@ public:
     }
 
 private:
-    juce::Rectangle<float> plotArea() const { return getLocalBounds().toFloat().reduced (8.0f, 10.0f).withTrimmedRight (24.0f); }
+    juce::Rectangle<float> plotArea() const { return getLocalBounds().toFloat().reduced (8.0f, 10.0f).withTrimmedTop (18.0f).withTrimmedBottom (25.0f).withTrimmedRight (24.0f); }
     float yFor (float db, juce::Rectangle<float> r) const
     {
         const float t = juce::jlimit (0.0f, 1.0f, (0.0f - db) / (0.0f - dbBot));
@@ -233,6 +268,7 @@ private:
     DualSource& hi; DualSource& lo; DualSource& tg; DualSource& gate;
     std::vector<DisplayColumn> hist;
     int w = 0;
-    int hover = -1, drag = -1;
+    int hover = -1, drag = -1, zoom = 0;
+    bool paused = false;
     const float dbBot = -60.0f;
 };

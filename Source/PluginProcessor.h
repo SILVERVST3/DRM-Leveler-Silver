@@ -1,6 +1,7 @@
 #pragma once
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <atomic>
+#include <juce_dsp/juce_dsp.h>
 #include "Parameters.h"
 #include "LevelerEngine.h"
 
@@ -36,7 +37,7 @@ public:
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override;
-    int getCurrentProgram() override { return currentPreset; }
+    int getCurrentProgram() override { return 0; }
     void setCurrentProgram (int index) override;
     const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
@@ -52,14 +53,20 @@ public:
     int  getView() const;                 // 0 = L/M, 1 = SUM, 2 = R/S
     void setView (int v);
     int  getMode() const { return (int) modeParam->load(); }
-    bool isStereoLinked() const { return getMode() == drmp::Stereo || getTotalNumInputChannels() < 2; }
-    bool isMonoLayout() const { return getTotalNumInputChannels() < 2; }
+    bool isStereoLinked() const { return getMode() == drmp::Stereo || getMainBusNumInputChannels() < 2; }
+    bool isMonoLayout() const { return getMainBusNumInputChannels() < 2; }
     bool hasSidechain() const;
 
     // A/B
     int  getABSlot() const { return abSlot; }
     void switchAB (int slot);
     void copyToOtherSlot();
+    void markPresetClean();
+    bool isPresetModified() const;
+    juce::String parameterSignature() const;
+    std::atomic<bool> analysisEnabled { false };
+    std::atomic<bool> spectralEnabled { false };
+    int getLatencyMsRounded() const { return (int) std::round (1000.0 * latency / sr); }
 
     // FIFO do display (audio -> UI)
     int  readColumns (DisplayColumn* dest, int maxCols);
@@ -98,6 +105,18 @@ private:
     int lastMode = -1;
     float bypassMix = 0.0f;
     juce::SmoothedValue<float> gIn[2], gOut[2], onIn[2], onOut[2];
+    juce::SmoothedValue<float> wetMix, clipMix, qualityMix, ceilingGain, modeDryMix;
+    int modeWarmup = 0, clipLatency = 0;
+    std::unique_ptr<juce::dsp::Oversampling<float>> clipOS;
+    juce::AudioBuffer<float> clipFrame { 2, 1 };
+    drm::DelayLine wetAlign[2], clipAlign[2];
+    std::atomic<float>* mixP = nullptr;
+    std::atomic<float>* boostP = nullptr;
+    std::atomic<float>* cutP = nullptr;
+    std::atomic<float>* measureP = nullptr;
+    std::atomic<float>* adaptiveP = nullptr;
+    std::atomic<float>* oversampleP = nullptr;
+    std::atomic<float>* ceilingP = nullptr;
     drm::SpectralBank specIn[2], specOut[2];
 
     // acumulador da coluna atual

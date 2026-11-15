@@ -41,6 +41,14 @@ namespace drmp
     static constexpr const char* inOn[2]  = { "inOnA", "inOnB" };
     static constexpr const char* outOn[2] = { "outOnA", "outOnB" };
 
+    static constexpr const char* mix = "mix";
+    static constexpr const char* boostMax = "boostMax";
+    static constexpr const char* cutMax = "cutMax";
+    static constexpr const char* measureInput = "measureInput";
+    static constexpr const char* adaptive = "adaptive";
+    static constexpr const char* oversample = "oversample";
+    static constexpr const char* ceiling = "ceiling";
+
     enum Mode { DualMono = 0, Stereo = 1, MidSide = 2 };
 
     inline juce::String id (int ch, const char* stem)
@@ -130,6 +138,17 @@ namespace drmp
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { inOn[1], 1 },  "Input R/S On", true));
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { outOn[0], 1 }, "Output L/M On", true));
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { outOn[1], 1 }, "Output R/S On", true));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { mix, 1 }, "Wet Mix",
+            NormalisableRange<float> (0, 100, 0.1f), 100, AudioParameterFloatAttributes().withStringFromValueFunction (pc)));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { boostMax, 1 }, "Maximum Boost",
+            NormalisableRange<float> (0, 80, 0.1f), 80, AudioParameterFloatAttributes().withStringFromValueFunction (dB)));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { cutMax, 1 }, "Maximum Reduction",
+            NormalisableRange<float> (0, 80, 0.1f), 80, AudioParameterFloatAttributes().withStringFromValueFunction (dB)));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { measureInput, 1 }, "Measure Main Input", false));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { adaptive, 1 }, "Adaptive Detection", false));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { oversample, 1 }, "Clipper 4x Oversampling", false));
+        layout.add (std::make_unique<AudioParameterFloat> (ParameterID { ceiling, 1 }, "Clipper Ceiling",
+            NormalisableRange<float> (-12, 0, 0.1f), 0, AudioParameterFloatAttributes().withStringFromValueFunction (dB)));
         return layout;
     }
 }
