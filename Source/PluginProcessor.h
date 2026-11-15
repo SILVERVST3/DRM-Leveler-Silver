@@ -68,6 +68,11 @@ public:
     std::atomic<float> meterOut[2] { { 0.0f }, { 0.0f } };
     std::atomic<float> gainNow[2]  { { 0.0f }, { 0.0f } };   // dB
 
+    // medidor espectral: pico por banda de oitava (linear), lido e zerado pela UI
+    static constexpr int numBands = drm::SpectralBank::numBands;
+    std::atomic<float> bandIn[2][numBands] {};
+    std::atomic<float> bandOut[2][numBands] {};
+
     int currentPreset = 0;
 
 private:
@@ -79,6 +84,7 @@ private:
         std::atomic<float>* scfOn, *scfMode, *scfLo, *scfHi, *solo, *sc;
     } cp[2];
 
+    std::atomic<float>* inOnP[2], *outOnP[2];
     std::atomic<float>* modeParam, *inLP, *inRP, *outLP, *outRP, *softClipP, *sCurveP, *bypassP;
     juce::AudioProcessorParameter* bypassParam = nullptr;
 
@@ -91,7 +97,8 @@ private:
     int latency = 0, colSamples = 220, colCount = 0;
     int lastMode = -1;
     float bypassMix = 0.0f;
-    juce::SmoothedValue<float> gIn[2], gOut[2];
+    juce::SmoothedValue<float> gIn[2], gOut[2], onIn[2], onOut[2];
+    drm::SpectralBank specIn[2], specOut[2];
 
     // acumulador da coluna atual
     DisplayColumn acc;

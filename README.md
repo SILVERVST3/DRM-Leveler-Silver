@@ -34,7 +34,9 @@ Latência: 9,5 ms, informada ao host (o REAPER compensa sozinho).
 | **A / A>B / B** | comparação A/B e cópia de estado |
 | **SOFT CLIP** | arredonda picos acima de 0 dBFS |
 | **S-CURVE** | rampas de attack/recovery em curva S |
-| **INPUT / OUTPUT** | faders por canal, com LINK (mantém o offset entre L e R) |
+| **INPUT / OUTPUT** | faders por canal, com LINK (mantém o offset entre L e R). Em M/S, faders atuam em Mid e Side |
+| **L / R** (ou **M / S**) embaixo dos medidores | liga/desliga aquele canal na entrada ou na saída (aceso = ligado); em M/S vira M e S |
+| **Medidores espectrais** | nível por banda de oitava (50 Hz a 12,8 kHz): grave = barra larga vermelha, agudo = barra fina violeta; linha branca = pico geral. Clique num medidor para alternar entre espectral e clássico |
 
 Display: entrada em cinza, boost em laranja, redução em azul, saída em branco; triângulos marcam as batidas detectadas (laranja = processada, cinza = ignorada por estar acima do HI). Duplo clique numa linha volta ao valor padrão. A janela pode ser redimensionada pelo canto.
 

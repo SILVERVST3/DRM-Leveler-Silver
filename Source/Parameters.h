@@ -37,6 +37,9 @@ namespace drmp
     static constexpr const char* softClip = "softClip";
     static constexpr const char* sCurve   = "sCurve";
     static constexpr const char* bypass   = "bypass";
+    // liga/desliga de canal (clicar em L/R ou M/S): indice 0 = L/M, 1 = R/S
+    static constexpr const char* inOn[2]  = { "inOnA", "inOnB" };
+    static constexpr const char* outOn[2] = { "outOnA", "outOnB" };
 
     enum Mode { DualMono = 0, Stereo = 1, MidSide = 2 };
 
@@ -123,6 +126,10 @@ namespace drmp
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { softClip, 1 }, "Soft Clipper", false));
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { sCurve, 1 }, "S-Curve", false));
         layout.add (std::make_unique<AudioParameterBool> (ParameterID { bypass, 1 }, "Bypass", false));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { inOn[0], 1 },  "Input L/M On", true));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { inOn[1], 1 },  "Input R/S On", true));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { outOn[0], 1 }, "Output L/M On", true));
+        layout.add (std::make_unique<AudioParameterBool> (ParameterID { outOn[1], 1 }, "Output R/S On", true));
         return layout;
     }
 }

@@ -41,6 +41,10 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
       outFader1 (single (p, outR), juce::Slider::LinearVertical),
       inLinkBtn  ("LINK", single (p, inLink)),
       outLinkBtn ("LINK", single (p, outLink)),
+      inCh0  ("L", single (p, inOn[0])),
+      inCh1  ("R", single (p, inOn[1])),
+      outCh0 ("L", single (p, outOn[0])),
+      outCh1 ("R", single (p, outOn[1])),
       scfOnBtn ("SCF",       dual (p, scfOn)),
       bpBtn    ("BAND-PASS", dual (p, scfMode), 0.0f, true),
       bsBtn    ("BAND-STOP", dual (p, scfMode), 1.0f, true),
@@ -63,13 +67,23 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
     for (juce::Component* c : std::initializer_list<juce::Component*> {
              &modeDual, &modeStereo, &modeMS, &btnA, &btnCopy, &btnB, &viewL, &viewSum, &viewR,
              &presetBox, &bypassBtn, &inFader0, &inFader1, &outFader0, &outFader1, &inLinkBtn, &outLinkBtn,
-             &scfOnBtn, &bpBtn, &bsBtn, &soloBtn, &scBtn, &softClipBtn, &sCurveBtn, &scfRange,
+             &inCh0, &inCh1, &outCh0, &outCh1, &scfOnBtn, &bpBtn, &bsBtn, &soloBtn, &scBtn, &softClipBtn, &sCurveBtn, &scfRange,
              &scfLoLbl, &scfHiLbl })
         content.addAndMakeVisible (c);
     for (int c = 0; c < 2; ++c)
     {
         content.addAndMakeVisible (inMeter[c]);
         content.addAndMakeVisible (outMeter[c]);
+        for (auto* m : { &inMeter[c], &outMeter[c] })
+        {
+            m->setTooltip ("Clique para alternar entre medidor espectral e classico");
+            m->onClick = [this]
+            {
+                const bool sp = (bool) proc.apvts.state.getProperty ("spectralMeters", true);
+                proc.apvts.state.setProperty ("spectralMeters", ! sp, nullptr);
+                refreshAll();
+            };
+        }
         for (auto* l : { &inVal[c], &outVal[c] })
         {
             l->setJustificationType (juce::Justification::centred);
@@ -140,6 +154,8 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
     soloBtn.setTooltip ("Solo: ouvir o sinal de deteccao (apos o SCF)");
     scBtn.setTooltip ("Usar a entrada externa de side-chain como chave de deteccao");
     sCurveBtn.setTooltip ("Rampas de ataque/recovery em curva S");
+    for (auto* b : { &inCh0, &inCh1, &outCh0, &outCh1 })
+        b->setTooltip ("Liga/desliga este canal");
     softClipBtn.setTooltip ("Arredonda picos acima de 0 dBFS");
 
     constrainer = std::make_unique<juce::ComponentBoundsConstrainer>();
@@ -184,18 +200,21 @@ void DRMLevelerAudioProcessorEditor::layout()
     bypassBtn.setBounds (986, 20, 64, 22);
 
     // medidores
-    auto meterSection = [] (int x0, BoundSlider& f0, BoundSlider& f1, LevelMeter* m, juce::Label* v, BoundToggle& link)
+    auto meterSection = [] (int x0, BoundSlider& f0, BoundSlider& f1, LevelMeter* m, juce::Label* v, BoundToggle& link,
+                            BoundToggle& ch0, BoundToggle& ch1)
     {
+        ch0.setBounds (x0 + 4, 552, 24, 22);
+        ch1.setBounds (x0 + 80, 552, 24, 22);
         v[0].setBounds (x0 + 2, 74, 52, 16);
         v[1].setBounds (x0 + 54, 74, 52, 16);
         f0.setBounds (x0 + 6, 96, 18, 440);
-        m[0].setBounds (x0 + 30, 98, 20, 436);
-        m[1].setBounds (x0 + 58, 98, 20, 436);
+        m[0].setBounds (x0 + 28, 98, 24, 436);
+        m[1].setBounds (x0 + 56, 98, 24, 436);
         f1.setBounds (x0 + 84, 96, 18, 440);
         link.setBounds (x0 + 30, 552, 48, 22);
     };
-    meterSection (10,  inFader0,  inFader1,  inMeter,  inVal,  inLinkBtn);
-    meterSection (942, outFader0, outFader1, outMeter, outVal, outLinkBtn);
+    meterSection (10,  inFader0,  inFader1,  inMeter,  inVal,  inLinkBtn,  inCh0,  inCh1);
+    meterSection (942, outFader0, outFader1, outMeter, outVal, outLinkBtn, outCh0, outCh1);
 
     // display e knobs
     display.setBounds (128, 54, 804, 278);
@@ -265,12 +284,6 @@ void DRMLevelerAudioProcessorEditor::paintContent (juce::Graphics& g)
     g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
     g.drawText ("INPUT", 10, 58, 108, 14, juce::Justification::centred);
     g.drawText ("OUTPUT", 942, 58, 108, 14, juce::Justification::centred);
-    g.setFont (juce::Font (juce::FontOptions (12.0f, juce::Font::bold)));
-    for (int x0 : { 10, 942 })
-    {
-        g.drawText ("L", x0 + 4, 552, 22, 22, juce::Justification::centred);
-        g.drawText ("R", x0 + 82, 552, 22, 22, juce::Justification::centred);
-    }
 
     g.setFont (juce::Font (juce::FontOptions (10.0f, juce::Font::bold)));
     g.setColour (silver::navySoft);
@@ -282,6 +295,7 @@ void DRMLevelerAudioProcessorEditor::refreshAll()
 {
     for (auto* k : { &kSens, &kRetrig, &kRange, &kComp, &kHold, &kRec, &kGate }) k->refresh();
     for (auto* b : { &modeDual, &modeStereo, &modeMS, &bypassBtn, &inLinkBtn, &outLinkBtn,
+                     &inCh0, &inCh1, &outCh0, &outCh1,
                      &scfOnBtn, &bpBtn, &bsBtn, &soloBtn, &scBtn, &softClipBtn, &sCurveBtn })
         b->refresh();
     for (auto* f : { &inFader0, &inFader1, &outFader0, &outFader1 }) f->refresh();
@@ -304,6 +318,20 @@ void DRMLevelerAudioProcessorEditor::refreshAll()
     viewL.setEnabled (! linked);
     viewR.setEnabled (! linked);
     for (auto* b : { &modeDual, &modeStereo, &modeMS }) b->setEnabled (! mono);
+
+    // botoes de canal: L/R ou M/S
+    for (auto* b : { &inCh0, &outCh0 }) b->setButtonText (ms ? "M" : "L");
+    for (auto* b : { &inCh1, &outCh1 }) { b->setButtonText (ms ? "S" : "R"); b->setEnabled (! mono); }
+    const bool spectral = (bool) proc.apvts.state.getProperty ("spectralMeters", true);
+    for (int c = 0; c < 2; ++c)
+    {
+        inMeter[c].setSpectral (spectral);
+        outMeter[c].setSpectral (spectral);
+    }
+    inMeter[0].setChannelOn (inCh0.isOn());
+    inMeter[1].setChannelOn (inCh1.isOn());
+    outMeter[0].setChannelOn (outCh0.isOn());
+    outMeter[1].setChannelOn (outCh1.isOn());
 
     btnA.setToggleState (proc.getABSlot() == 0, juce::dontSendNotification);
     btnB.setToggleState (proc.getABSlot() == 1, juce::dontSendNotification);
@@ -345,6 +373,14 @@ void DRMLevelerAudioProcessorEditor::timerCallback()
 
     for (int c = 0; c < 2; ++c)
     {
+        float bi[DRMLevelerAudioProcessor::numBands], bo[DRMLevelerAudioProcessor::numBands];
+        for (int b = 0; b < DRMLevelerAudioProcessor::numBands; ++b)
+        {
+            bi[b] = proc.bandIn[c][b].exchange (0.0f);
+            bo[b] = proc.bandOut[c][b].exchange (0.0f);
+        }
+        inMeter[c].pushBands (bi);
+        outMeter[c].pushBands (bo);
         inMeter[c].push (proc.meterIn[c].exchange (0.0f));
         outMeter[c].push (proc.meterOut[c].exchange (0.0f));
     }

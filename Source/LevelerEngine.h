@@ -39,6 +39,16 @@ namespace drm
             return y;
         }
 
+        // band-pass de ganho 0 dB no pico (RBJ)
+        void setBandPass (double sr, double f, double q)
+        {
+            f = std::clamp (f, 10.0, sr * 0.45);
+            const double w0 = 2.0 * 3.141592653589793 * f / sr;
+            const double alpha = std::sin (w0) / (2.0 * q), a0 = 1.0 + alpha;
+            b0 = (float) (alpha / a0); b1 = 0.0f; b2 = (float) (-alpha / a0);
+            a1 = (float) (-2.0 * std::cos (w0) / a0); a2 = (float) ((1.0 - alpha) / a0);
+        }
+
         void set (bool highPass, double sr, double f, double q)
         {
             f = std::clamp (f, 10.0, sr * 0.45);
@@ -271,6 +281,35 @@ namespace drm
         const float y = k + (1.0f - k) * std::tanh ((ax - k) / (1.0f - k));
         return x < 0 ? -y : y;
     }
+
+    // -------------------------------------------------------------------------
+    //  Banco de filtros por oitava para o medidor espectral
+    //  (graves = barra larga vermelha ... agudos = barra fina violeta)
+    // -------------------------------------------------------------------------
+    struct SpectralBank
+    {
+        static constexpr int numBands = 9;
+        static constexpr float centres[numBands] = { 50, 100, 200, 400, 800, 1600, 3200, 6400, 12800 };
+        Biquad bp[numBands][2];       // 2 em cascata = filtro de oitava mais seletivo
+        float peak[numBands] {};
+
+        void prepare (double sr)
+        {
+            for (int i = 0; i < numBands; ++i)
+                for (auto& b : bp[i]) { b.setBandPass (sr, centres[i], 1.41); b.reset(); }
+            clearPeaks();
+        }
+        void clearPeaks() { for (auto& p : peak) p = 0.0f; }
+
+        inline void process (float x)
+        {
+            for (int i = 0; i < numBands; ++i)
+            {
+                const float y = std::abs (bp[i][1].process (bp[i][0].process (x)));
+                if (y > peak[i]) peak[i] = y;
+            }
+        }
+    };
 
     // -------------------------------------------------------------------------
     struct DelayLine

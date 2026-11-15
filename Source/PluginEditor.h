@@ -70,6 +70,7 @@ private:
     SilverLookAndFeel laf;
     DRMLevelerAudioProcessor& proc;
     Content content;
+    juce::TooltipWindow tooltipWindow { this, 700 };
 
     // fontes usadas pelo display
     DualSource hiS, loS, tgS, gateS;
@@ -88,6 +89,7 @@ private:
     LevelMeter inMeter[2], outMeter[2];
     BoundSlider inFader0, inFader1, outFader0, outFader1;
     BoundToggle inLinkBtn, outLinkBtn;
+    BoundToggle inCh0, inCh1, outCh0, outCh1;   // liga/desliga de canal (L/R ou M/S)
     juce::Label inVal[2], outVal[2];
 
     // side-chain filter

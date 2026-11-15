@@ -31,6 +31,11 @@ DRMLevelerAudioProcessor::DRMLevelerAudioProcessor()
     sCurveP   = apvts.getRawParameterValue (sCurve);
     bypassP   = apvts.getRawParameterValue (bypass);
     bypassParam = apvts.getParameter (bypass);
+    for (int c = 0; c < 2; ++c)
+    {
+        inOnP[c]  = apvts.getRawParameterValue (inOn[c]);
+        outOnP[c] = apvts.getRawParameterValue (outOn[c]);
+    }
 
     apvts.state.setProperty ("view", 1, nullptr);
 }
@@ -76,6 +81,12 @@ void DRMLevelerAudioProcessor::prepareToPlay (double sampleRate, int)
         dryDelay[c].prepare (latency);
         gIn[c].reset (sr, 0.02);
         gOut[c].reset (sr, 0.02);
+        onIn[c].reset (sr, 0.015);
+        onOut[c].reset (sr, 0.015);
+        onIn[c].setCurrentAndTargetValue (inOnP[c]->load() > 0.5f ? 1.0f : 0.0f);
+        onOut[c].setCurrentAndTargetValue (outOnP[c]->load() > 0.5f ? 1.0f : 0.0f);
+        specIn[c].prepare (sr);
+        specOut[c].prepare (sr);
     }
     gIn[0].setCurrentAndTargetValue (drm::dbToGain (inLP->load()));
     gIn[1].setCurrentAndTargetValue (drm::dbToGain (inRP->load()));
@@ -157,6 +168,13 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     gIn[1].setTargetValue (drm::dbToGain (inRP->load()));
     gOut[0].setTargetValue (drm::dbToGain (outLP->load()));
     gOut[1].setTargetValue (drm::dbToGain (outRP->load()));
+    for (int c = 0; c < 2; ++c)
+    {
+        onIn[c].setTargetValue (inOnP[c]->load() > 0.5f ? 1.0f : 0.0f);
+        onOut[c].setTargetValue (outOnP[c]->load() > 0.5f ? 1.0f : 0.0f);
+        specIn[c].clearPeaks();
+        specOut[c].clearPeaks();
+    }
     const bool clip = softClipP->load() > 0.5f;
     const float bypTarget = bypassP->load() > 0.5f ? 1.0f : 0.0f;
     const float bypStep = (float) (1.0 / (0.02 * sr));
@@ -168,12 +186,15 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         float raw[2] = { io[0][i], numCh > 1 ? io[1][i] : 0.0f };
         float dry[2] = { dryDelay[0].process (raw[0]), numCh > 1 ? dryDelay[1].process (raw[1]) : 0.0f };
 
-        const float gi0 = gIn[0].getNextValue(), gi1 = gIn[1].getNextValue();
-        float x[2] = { raw[0] * gi0, raw[1] * gi1 };
+        // entrada: em M/S os faders e o liga/desliga atuam em Mid e Side
+        float x[2] = { raw[0], raw[1] };
+        if (ms) { const float mm = (x[0] + x[1]) * 0.5f, ss = (x[0] - x[1]) * 0.5f; x[0] = mm; x[1] = ss; }
+        x[0] *= gIn[0].getNextValue() * onIn[0].getNextValue();
+        x[1] *= gIn[1].getNextValue() * onIn[1].getNextValue();
         pkIn[0] = juce::jmax (pkIn[0], std::abs (x[0]));
         pkIn[1] = juce::jmax (pkIn[1], std::abs (x[1]));
-
-        if (ms) { const float mm = (x[0] + x[1]) * 0.5f, ss = (x[0] - x[1]) * 0.5f; x[0] = mm; x[1] = ss; }
+        specIn[0].process (x[0]);
+        if (numCh > 1) specIn[1].process (x[1]);
 
         // ---- sinal de deteccao (key) ----
         float key[2] = { x[0], x[1] };
@@ -227,11 +248,15 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
             if (std::abs (gd[c]) > std::abs (acc.gain[c])) acc.gain[c] = gd[c];
         }
 
+        // saida: ganho e liga/desliga no dominio do canal (L/R ou M/S)
+        y[0] *= gOut[0].getNextValue() * onOut[0].getNextValue();
+        y[1] *= gOut[1].getNextValue() * onOut[1].getNextValue();
+        float meterY[2] = { y[0], y[1] };
         if (ms) { const float l = y[0] + y[1], r = y[0] - y[1]; y[0] = l; y[1] = r; }
-
-        y[0] *= gOut[0].getNextValue();
-        y[1] *= gOut[1].getNextValue();
         if (clip) { y[0] = drm::softClip (y[0]); y[1] = drm::softClip (y[1]); }
+        if (! ms) { meterY[0] = y[0]; meterY[1] = y[1]; }
+        specOut[0].process (meterY[0]);
+        if (numCh > 1) specOut[1].process (meterY[1]);
 
         // bypass com crossfade (mantem a latencia)
         if (bypassMix != bypTarget)
@@ -242,8 +267,8 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
         io[0][i] = y[0];
         if (numCh > 1) io[1][i] = y[1];
-        pkOut[0] = juce::jmax (pkOut[0], std::abs (y[0]));
-        pkOut[1] = juce::jmax (pkOut[1], std::abs (y[1]));
+        pkOut[0] = juce::jmax (pkOut[0], std::abs (meterY[0]));
+        pkOut[1] = juce::jmax (pkOut[1], std::abs (meterY[1]));
 
         // ---- coluna do display ----
         if (++colCount >= colSamples)
@@ -261,6 +286,12 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     if (numCh < 2) { pkIn[1] = pkIn[0]; pkOut[1] = pkOut[0]; }
     for (int c = 0; c < 2; ++c)
     {
+        const int src = numCh < 2 ? 0 : c;
+        for (int b = 0; b < numBands; ++b)
+        {
+            bandIn[c][b].store (juce::jmax (bandIn[c][b].load(), specIn[src].peak[b]));
+            bandOut[c][b].store (juce::jmax (bandOut[c][b].load(), specOut[src].peak[b]));
+        }
         meterIn[c].store (juce::jmax (meterIn[c].load(), pkIn[c]));
         meterOut[c].store (juce::jmax (meterOut[c].load(), pkOut[c]));
     }

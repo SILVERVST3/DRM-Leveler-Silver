@@ -165,16 +165,42 @@ private:
 // =============================================================================
 //  Medidor vertical
 // =============================================================================
-class LevelMeter : public juce::Component
+class LevelMeter : public juce::Component, public juce::SettableTooltipClient
 {
 public:
+    static constexpr int numBands = drm::SpectralBank::numBands;
+
+    // nivel de banda larga (linha de pico e modo classico)
     void push (float linear)
     {
-        const float db = juce::jlimit (-70.0f, 12.0f, juce::Decibels::gainToDecibels (linear, -70.0f));
+        const float db = toDb (linear);
         levelDb = db > levelDb ? db : juce::jmax (db, levelDb - 1.2f);
         if (db >= peakDb) { peakDb = db; holdTicks = 45; }
         else if (--holdTicks < 0) peakDb = juce::jmax (-70.0f, peakDb - 0.8f);
         repaint();
+    }
+
+    // nivel por banda de oitava (modo espectral)
+    void pushBands (const float* linear)
+    {
+        for (int i = 0; i < numBands; ++i)
+        {
+            const float db = toDb (linear[i]);
+            bandDb[i] = db > bandDb[i] ? db : juce::jmax (db, bandDb[i] - 1.2f);
+        }
+    }
+
+    void setSpectral (bool s) { if (s != spectral) { spectral = s; repaint(); } }
+    void setChannelOn (bool on) { if (on != channelOn) { channelOn = on; repaint(); } }
+
+    std::function<void()> onClick;
+    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+
+    // vermelho (graves) -> violeta (agudos)
+    static juce::Colour bandColour (int i)
+    {
+        const float hue = 0.78f * (float) i / (float) (numBands - 1);
+        return juce::Colour::fromHSV (hue, 0.78f, 0.97f, 1.0f);
     }
 
     void paint (juce::Graphics& g) override
@@ -183,15 +209,44 @@ public:
         g.setColour (silver::display);
         g.fillRoundedRectangle (r, 2.0f);
         auto inner = r.reduced (2.0f);
-        const float yLvl = yFor (levelDb, inner);
-        juce::ColourGradient cg (juce::Colour (0xffef4b3a), inner.getX(), yFor (0.0f, inner),
-                                 juce::Colour (0xff3d7fb8), inner.getX(), inner.getBottom(), false);
-        cg.addColour (0.10, silver::orange);
-        cg.addColour (0.30, juce::Colour (0xff7cc6e8));
-        g.setGradientFill (cg);
-        g.fillRect (inner.withTop (yLvl));
+
+        // marcas de escala a cada 6 dB
+        g.setColour (silver::grid);
+        for (int db = 0; db >= -60; db -= 6)
+            g.fillRect (inner.getX(), yFor ((float) db, inner), inner.getWidth(), 1.0f);
+
+        if (spectral)
+        {
+            // barras sobrepostas: grave = larga e vermelha atras, agudo = fina e violeta na frente
+            for (int i = 0; i < numBands; ++i)
+            {
+                const float wFrac = 1.0f - 0.1f * (float) i;   // 100% (grave) ... 20% (agudo)
+                auto bar = inner.withSizeKeepingCentre (inner.getWidth() * wFrac, inner.getHeight());
+                bar = bar.withTop (yFor (bandDb[i], inner));
+                g.setColour (bandColour (i).withAlpha (0.92f));
+                g.fillRect (bar);
+            }
+        }
+        else
+        {
+            const float yLvl = yFor (levelDb, inner);
+            juce::ColourGradient cg (juce::Colour (0xffef4b3a), inner.getX(), yFor (0.0f, inner),
+                                     juce::Colour (0xff3d7fb8), inner.getX(), inner.getBottom(), false);
+            cg.addColour (0.10, silver::orange);
+            cg.addColour (0.30, juce::Colour (0xff7cc6e8));
+            g.setGradientFill (cg);
+            g.fillRect (inner.withTop (yLvl));
+        }
+
+        // linha de pico (banda larga)
         g.setColour (peakDb > 0.0f ? juce::Colour (0xffef4b3a) : silver::lineLt);
         g.fillRect (inner.getX(), yFor (peakDb, inner) - 1.0f, inner.getWidth(), 2.0f);
+
+        if (! channelOn)
+        {
+            g.setColour (silver::panelDk.withAlpha (0.55f));
+            g.fillRoundedRectangle (r, 2.0f);
+        }
         g.setColour (silver::edge);
         g.drawRoundedRectangle (r, 2.0f, 1.0f);
     }
@@ -203,8 +258,12 @@ public:
     }
 
 private:
+    static float toDb (float lin) { return juce::jlimit (-70.0f, 12.0f, juce::Decibels::gainToDecibels (lin, -70.0f)); }
+
     float levelDb = -70.0f, peakDb = -70.0f;
+    float bandDb[numBands] { -70, -70, -70, -70, -70, -70, -70, -70, -70 };
     int holdTicks = 0;
+    bool spectral = true, channelOn = true;
 };
 
 // =============================================================================
