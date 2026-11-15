@@ -158,11 +158,12 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
         b->setTooltip ("Liga/desliga este canal");
     softClipBtn.setTooltip ("Arredonda picos acima de 0 dBFS");
 
-    constrainer = std::make_unique<juce::ComponentBoundsConstrainer>();
-    constrainer->setFixedAspectRatio ((double) baseW / baseH);
-    constrainer->setSizeLimits ((int) (baseW * 0.75), (int) (baseH * 0.75), (int) (baseW * 1.8), (int) (baseH * 1.8));
-    setConstrainer (constrainer.get());
+    // Redimensionamento LIVRE (sem proporcao travada): com proporcao fixa, o REAPER
+    // no Windows com escala de tela 125%/150% entra num ciclo infinito de
+    // "pede tamanho -> plugin arredonda -> pede de novo" e congela/fecha.
+    // A interface escala para caber e fica centralizada.
     setResizable (true, true);
+    setResizeLimits ((int) (baseW * 0.6), (int) (baseH * 0.6), baseW * 3, baseH * 3);
 
     content.setBounds (0, 0, baseW, baseH);
     layout();
@@ -180,8 +181,10 @@ DRMLevelerAudioProcessorEditor::~DRMLevelerAudioProcessorEditor()
 
 void DRMLevelerAudioProcessorEditor::resized()
 {
-    const float s = (float) getWidth() / (float) baseW;
-    content.setTransform (juce::AffineTransform::scale (s));
+    const float s = juce::jmin ((float) getWidth() / (float) baseW, (float) getHeight() / (float) baseH);
+    const float dx = ((float) getWidth()  - (float) baseW * s) * 0.5f;
+    const float dy = ((float) getHeight() - (float) baseH * s) * 0.5f;
+    content.setTransform (juce::AffineTransform::scale (s).translated (dx, dy));
 }
 
 void DRMLevelerAudioProcessorEditor::layout()

@@ -50,7 +50,7 @@ public:
     explicit DRMLevelerAudioProcessorEditor (DRMLevelerAudioProcessor&);
     ~DRMLevelerAudioProcessorEditor() override;
 
-    void paint (juce::Graphics&) override {}
+    void paint (juce::Graphics& g) override { g.fillAll (silver::bgBot); }
     void resized() override;
 
     static constexpr int baseW = 1060, baseH = 600;
@@ -99,7 +99,6 @@ private:
     bool scfDragging = false, scfUpdating = false;
     juce::Label scfLoLbl, scfHiLbl;
 
-    std::unique_ptr<juce::ComponentBoundsConstrainer> constrainer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DRMLevelerAudioProcessorEditor)
 };
