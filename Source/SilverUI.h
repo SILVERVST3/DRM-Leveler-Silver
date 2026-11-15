@@ -175,6 +175,7 @@ public:
     {
         const float db = toDb (linear);
         levelDb = db > levelDb ? db : juce::jmax (db, levelDb - 1.2f);
+        if (db >= 0) clipped = true;
         if (db >= peakDb) { peakDb = db; holdTicks = 45; }
         else if (--holdTicks < 0) peakDb = juce::jmax (-70.0f, peakDb - 0.8f);
         repaint();
@@ -194,7 +195,11 @@ public:
     void setChannelOn (bool on) { if (on != channelOn) { channelOn = on; repaint(); } }
 
     std::function<void()> onClick;
-    void mouseDown (const juce::MouseEvent&) override { if (onClick) onClick(); }
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        if (e.mods.isShiftDown()) { clipped = false; peakDb = -70; repaint(); }
+        else if (onClick) onClick();
+    }
 
     // vermelho (graves) -> violeta (agudos)
     static juce::Colour bandColour (int i)
@@ -242,6 +247,16 @@ public:
         g.setColour (peakDb > 0.0f ? juce::Colour (0xffef4b3a) : silver::lineLt);
         g.fillRect (inner.getX(), yFor (peakDb, inner) - 1.0f, inner.getWidth(), 2.0f);
 
+        g.setFont (juce::Font (juce::FontOptions (9.0f, juce::Font::bold)));
+        g.setColour (silver::display.withAlpha (0.85f));
+        g.fillRect (0, getHeight() - 18, getWidth(), 18);
+        g.setColour (silver::lineLt);
+        g.drawText (juce::String (peakDb, 0), 0, getHeight() - 18, getWidth(), 18, juce::Justification::centred);
+        if (clipped)
+        {
+            g.setColour (juce::Colour (0xffdb4e45));
+            g.fillRect (2, 2, getWidth() - 4, 5);
+        }
         if (! channelOn)
         {
             g.setColour (silver::panelDk.withAlpha (0.55f));
@@ -263,7 +278,7 @@ private:
     float levelDb = -70.0f, peakDb = -70.0f;
     float bandDb[numBands] { -70, -70, -70, -70, -70, -70, -70, -70, -70 };
     int holdTicks = 0;
-    bool spectral = true, channelOn = true;
+    bool spectral = false, channelOn = true, clipped = false;
 };
 
 // =============================================================================
@@ -371,14 +386,14 @@ public:
         if (on)
         {
             juce::ColourGradient cg (silver::navySoft, r.getX(), r.getY(), silver::navy, r.getX(), r.getBottom(), false);
-            g.setGradientFill (cg);
+            g.setColour (silver::navy);
         }
         else
         {
             juce::ColourGradient cg (juce::Colours::white, r.getX(), r.getY(), silver::panelDk, r.getX(), r.getBottom(), false);
-            g.setGradientFill (cg);
+            g.setColour (silver::panel);
         }
-        g.fillRoundedRectangle (r, 3.0f);
+        g.fillRoundedRectangle (r, 4.0f);
         if (over || down)
         {
             g.setColour ((on ? juce::Colours::white : silver::navy).withAlpha (down ? 0.15f : 0.07f));

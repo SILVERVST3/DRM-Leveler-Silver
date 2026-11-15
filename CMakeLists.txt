@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22)
-project(DRM_Leveler_SILVER VERSION 1.0.0)
+project(DRM_Leveler_SILVER VERSION 1.1.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ endif()
 
 juce_add_plugin(DRMLevelerSILVER
     COMPANY_NAME "Silver Audio"
+    BUNDLE_ID "com.silveraudio.drmleveler"
     COMPANY_WEBSITE ""
     PLUGIN_MANUFACTURER_CODE Slvr
     PLUGIN_CODE DrmL
@@ -52,3 +53,16 @@ target_link_libraries(DRMLevelerSILVER
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+option(DRM_BUILD_TESTS "Build DSP regression and processor integration tests" OFF)
+if(DRM_BUILD_TESTS)
+    enable_testing()
+    add_executable(DRMEngineTests Tests/EngineTests.cpp)
+    target_include_directories(DRMEngineTests PRIVATE Source)
+    add_test(NAME EngineRegression COMMAND DRMEngineTests)
+
+    add_executable(DRMProcessorTests Tests/ProcessorTests.cpp)
+    target_link_libraries(DRMProcessorTests PRIVATE DRMLevelerSILVER)
+    target_include_directories(DRMProcessorTests PRIVATE Source "${JUCE_MODULES_DIR}")
+    add_test(NAME ProcessorIntegration COMMAND DRMProcessorTests)
+endif()

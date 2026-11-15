@@ -12,13 +12,27 @@ public:
     {
         if (bipolar) slider.getProperties().set ("bipolar", true);
         addAndMakeVisible (slider);
+        valueLabel.setJustificationType (juce::Justification::centred);
+        valueLabel.setEditable (false, true);
+        valueLabel.setTooltip ("Double-click to type a value. Shift-drag for fine adjustment.");
+        valueLabel.setColour (juce::Label::textColourId, silver::navy);
+        valueLabel.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
+        valueLabel.onTextChange = [this]
+        {
+            const auto text = valueLabel.getText().trim();
+            if (! text.containsAnyOf ("0123456789")) { lastText.clear(); refresh(); return; }
+            slider.setValue (text.getFloatValue(), juce::sendNotificationSync);
+            lastText.clear(); refresh();
+        };
+        addAndMakeVisible (valueLabel);
+        slider.setTitle (n); slider.setTooltip (n + ": Shift-drag for fine adjustment; double-click to reset.");
     }
 
     void refresh()
     {
         slider.refresh();
         const auto t = slider.getTextFromValue (slider.getValue());
-        if (t != lastText) { lastText = t; repaint(); }
+        if (t != lastText && ! valueLabel.isBeingEdited()) { lastText = t; valueLabel.setText (t, juce::dontSendNotification); repaint(); }
     }
 
     void paint (juce::Graphics& g) override
@@ -26,22 +40,21 @@ public:
         g.setColour (silver::navy);
         g.setFont (juce::Font (juce::FontOptions (11.5f, juce::Font::bold)));
         g.drawText (name, getLocalBounds().removeFromTop (16), juce::Justification::centred);
-        g.setFont (juce::Font (juce::FontOptions (13.0f, juce::Font::bold)));
-        g.setColour (silver::navySoft);
-        g.drawText (lastText, getLocalBounds().removeFromBottom (18), juce::Justification::centred);
+
     }
 
     void resized() override
     {
         auto r = getLocalBounds();
         r.removeFromTop (16);
-        r.removeFromBottom (18);
+        valueLabel.setBounds (r.removeFromBottom (20));
         slider.setBounds (r);
     }
 
     juce::String name;
     BoundSlider slider;
     juce::String lastText;
+    juce::Label valueLabel;
 };
 
 class DRMLevelerAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -53,7 +66,7 @@ public:
     void paint (juce::Graphics&) override {}
     void resized() override;
 
-    static constexpr int baseW = 1060, baseH = 600;
+    static constexpr int baseW = 1060, baseH = 760;
 
 private:
     void timerCallback() override;
@@ -77,11 +90,18 @@ private:
     WaveDisplay display;
 
     KnobBlock kSens, kRetrig, kRange, kComp, kHold, kRec, kGate;
+    KnobBlock kBoost, kCut, kMix, kCeiling;
+    BoundToggle measureMainBtn, adaptiveBtn, osBtn;
+    juce::TextButton pauseBtn { "PAUSE" }, zoomOutBtn { "-" }, zoomInBtn { "+" };
+    juce::TextButton saveBtn { "SAVE" }, loadBtn { "LOAD" };
+    juce::Label timeLabel, presetStatus, sidechainStatus;
+    std::unique_ptr<juce::FileChooser> fileChooser;
+    void choosePresetFile (bool save);
 
     // cabecalho
     BoundToggle modeDual, modeStereo, modeMS;
     juce::TextButton btnA { "A" }, btnCopy { ">" }, btnB { "B" };
-    juce::TextButton viewL { "LEFT" }, viewSum { "SUM" }, viewR { "RIGHT" };
+    juce::TextButton viewL { "LEFT" }, viewSum { "BOTH" }, viewR { "RIGHT" };
     juce::ComboBox presetBox;
     BoundToggle bypassBtn;
 

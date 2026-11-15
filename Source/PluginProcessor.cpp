@@ -4,6 +4,15 @@
 
 using namespace drmp;
 
+namespace
+{
+    void publishPeak (std::atomic<float>& dest, float value)
+    {
+        float old = dest.load (std::memory_order_relaxed);
+        while (old < value && ! dest.compare_exchange_weak (old, value, std::memory_order_relaxed)) {}
+    }
+}
+
 static constexpr double kWindowMs = 8.0;   // janela de medicao do pico da batida
 static constexpr double kAttackMs = 1.5;   // rampa de ganho antes do transiente
 static constexpr double kColumnMs = 5.0;   // resolucao do display
@@ -38,6 +47,14 @@ DRMLevelerAudioProcessor::DRMLevelerAudioProcessor()
     }
 
     apvts.state.setProperty ("view", 1, nullptr);
+    mixP = apvts.getRawParameterValue (mix);
+    boostP = apvts.getRawParameterValue (boostMax);
+    cutP = apvts.getRawParameterValue (cutMax);
+    measureP = apvts.getRawParameterValue (measureInput);
+    adaptiveP = apvts.getRawParameterValue (adaptive);
+    oversampleP = apvts.getRawParameterValue (oversample);
+    ceilingP = apvts.getRawParameterValue (ceiling);
+    markPresetClean();
 }
 
 bool DRMLevelerAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -68,7 +85,12 @@ void DRMLevelerAudioProcessor::prepareToPlay (double sampleRate, int)
     sr = sampleRate;
     const int W = juce::jmax (1, (int) std::round (kWindowMs * 0.001 * sr));
     const int A = juce::jmax (1, (int) std::round (kAttackMs * 0.001 * sr));
-    latency = W + A;
+    clipOS = std::make_unique<juce::dsp::Oversampling<float>> (
+        2, 2, juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR, true, true);
+    clipOS->initProcessing (1);
+    clipOS->reset();
+    clipLatency = (int) std::round (clipOS->getLatencyInSamples());
+    latency = W + A + clipLatency;
     setLatencySamples (latency);
 
     for (int c = 0; c < 2; ++c)
@@ -76,8 +98,10 @@ void DRMLevelerAudioProcessor::prepareToPlay (double sampleRate, int)
         scf[c].prepare (sr);
         det[c].prepare (sr, W);
         env[c].prepare (sr, A);
-        audioDelay[c].prepare (latency);
-        detDelay[c].prepare (latency);
+        audioDelay[c].prepare (W + A);
+        detDelay[c].prepare (W + A);
+        wetAlign[c].prepare (clipLatency);
+        clipAlign[c].prepare (clipLatency);
         dryDelay[c].prepare (latency);
         gIn[c].reset (sr, 0.02);
         gOut[c].reset (sr, 0.02);
@@ -96,7 +120,17 @@ void DRMLevelerAudioProcessor::prepareToPlay (double sampleRate, int)
     colSamples = juce::jmax (16, (int) std::round (kColumnMs * 0.001 * sr));
     colCount = 0;
     acc = {};
-    lastMode = -1;
+    lastMode = getMainBusNumInputChannels() < 2 ? DualMono : (int) modeParam->load();
+    modeWarmup = 0;
+    wetMix.reset (sr, 0.02); clipMix.reset (sr, 0.02);
+    qualityMix.reset (sr, 0.02); ceilingGain.reset (sr, 0.02); modeDryMix.reset (sr, 0.005);
+    wetMix.setCurrentAndTargetValue (mixP->load() * 0.01f);
+    clipMix.setCurrentAndTargetValue (softClipP->load() > 0.5f ? 1.0f : 0.0f);
+    qualityMix.setCurrentAndTargetValue (oversampleP->load() > 0.5f ? 1.0f : 0.0f);
+    ceilingGain.setCurrentAndTargetValue (drm::dbToGain (ceilingP->load()));
+    modeDryMix.setCurrentAndTargetValue (0);
+    // Keep the SPSC read cursor owned by the UI; discard stale columns there.
+    colCount = 0;
     bypassMix = bypassP->load() > 0.5f ? 1.0f : 0.0f;
 }
 
@@ -114,6 +148,8 @@ void DRMLevelerAudioProcessor::readParams (int ch, drm::ChannelParams& p) const
     p.sens     = c.sens->load() * 0.01f;
     p.gateDb   = c.gate->load();
     p.sCurve   = sCurveP->load() > 0.5f;
+    p.boostLimit = boostP->load(); p.cutLimit = cutP->load();
+    p.adaptive = adaptiveP->load() > 0.5f;
 }
 
 void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer&)
@@ -137,15 +173,25 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
     }
 
     // ---- parametros ----
-    int m = (int) modeParam->load();
-    if (numCh < 2) m = DualMono;
+    int requestedMode = numCh < 2 ? DualMono : (int) modeParam->load();
+    if (requestedMode != lastMode)
+    {
+        modeDryMix.setTargetValue (1.0f);
+        if (modeDryMix.getCurrentValue() >= 1.0f)
+        {
+            lastMode = requestedMode;
+            for (int c = 0; c < 2; ++c)
+            {
+                det[c].reset(); env[c].reset();
+                audioDelay[c].reset(); detDelay[c].reset();
+            }
+            modeWarmup = latency;
+        }
+    }
+    else if (modeWarmup <= 0) modeDryMix.setTargetValue (0.0f);
+    const int m = lastMode;
     const bool linked = (m == Stereo) || numCh < 2;
     const bool ms = (m == MidSide);
-    if (m != lastMode)
-    {
-        for (int c = 0; c < 2; ++c) { det[c].reset(); env[c].reset(); }
-        lastMode = m;
-    }
 
     drm::ChannelParams P[2];
     readParams (0, P[0]);
@@ -175,7 +221,14 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         specIn[c].clearPeaks();
         specOut[c].clearPeaks();
     }
-    const bool clip = softClipP->load() > 0.5f;
+    const bool analyse = analysisEnabled.load (std::memory_order_relaxed);
+    const bool spectral = analyse && spectralEnabled.load (std::memory_order_relaxed);
+    if (! analyse) { acc = {}; colCount = 0; }
+    wetMix.setTargetValue (mixP->load() * 0.01f);
+    clipMix.setTargetValue (softClipP->load() > 0.5f ? 1.0f : 0.0f);
+    qualityMix.setTargetValue (oversampleP->load() > 0.5f ? 1.0f : 0.0f);
+    ceilingGain.setTargetValue (drm::dbToGain (ceilingP->load()));
+    const bool measureMain = measureP->load() > 0.5f;
     const float bypTarget = bypassP->load() > 0.5f ? 1.0f : 0.0f;
     const float bypStep = (float) (1.0 / (0.02 * sr));
 
@@ -193,8 +246,11 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         x[1] *= gIn[1].getNextValue() * onIn[1].getNextValue();
         pkIn[0] = juce::jmax (pkIn[0], std::abs (x[0]));
         pkIn[1] = juce::jmax (pkIn[1], std::abs (x[1]));
-        specIn[0].process (x[0]);
-        if (numCh > 1) specIn[1].process (x[1]);
+        if (spectral)
+        {
+            specIn[0].process (x[0]);
+            if (numCh > 1) specIn[1].process (x[1]);
+        }
 
         // ---- sinal de deteccao (key) ----
         float key[2] = { x[0], x[1] };
@@ -211,7 +267,8 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         auto handleBeat = [&] (int unit, float lvl)
         {
             float g = 0; bool ignored = false;
-            if (drm::computeBeatGain (P[unit], lvl, g, ignored))
+            if (drm::computeBeatGain (P[unit], lvl, g, ignored,
+                    measureMain ? det[unit].measuredInputDb() : NAN))
             {
                 env[unit].trigger (g);
                 const int flag = ignored ? 2 : 1;
@@ -223,12 +280,13 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         float lvl;
         if (linked)
         {
-            if (det[0].push (juce::jmax (std::abs (d[0]), std::abs (d[1])), lvl)) handleBeat (0, lvl);
+            if (det[0].push (juce::jmax (std::abs (d[0]), std::abs (d[1])), lvl,
+                    juce::jmax (std::abs (x[0]), std::abs (x[1])))) handleBeat (0, lvl);
         }
         else
         {
             for (int c = 0; c < numCh; ++c)
-                if (det[c].push (std::abs (d[c]), lvl)) handleBeat (c, lvl);
+                if (det[c].push (std::abs (d[c]), lvl, std::abs (x[c]))) handleBeat (c, lvl);
         }
 
         // ---- caminho de audio atrasado ----
@@ -239,10 +297,11 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         const float g1 = linked ? g0 : env[1].next();
         const float gd[2] = { g0, g1 };
 
+        const float wm = wetMix.getNextValue();
         float y[2];
         for (int c = 0; c < 2; ++c)
         {
-            y[c] = solo[c] ? dd[c] : dl[c] * drm::dbToGain (gd[c]);
+            y[c] = solo[c] ? dd[c] : dl[c] * ((1.0f - wm) + wm * drm::dbToGain (gd[c]));
             acc.in[c]  = juce::jmax (acc.in[c],  std::abs (dl[c]));
             acc.out[c] = juce::jmax (acc.out[c], std::abs (y[c]));
             if (std::abs (gd[c]) > std::abs (acc.gain[c])) acc.gain[c] = gd[c];
@@ -251,12 +310,30 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         // saida: ganho e liga/desliga no dominio do canal (L/R ou M/S)
         y[0] *= gOut[0].getNextValue() * onOut[0].getNextValue();
         y[1] *= gOut[1].getNextValue() * onOut[1].getNextValue();
-        float meterY[2] = { y[0], y[1] };
         if (ms) { const float l = y[0] + y[1], r = y[0] - y[1]; y[0] = l; y[1] = r; }
-        if (clip) { y[0] = drm::softClip (y[0]); y[1] = drm::softClip (y[1]); }
-        if (! ms) { meterY[0] = y[0]; meterY[1] = y[1]; }
-        specOut[0].process (meterY[0]);
-        if (numCh > 1) specOut[1].process (meterY[1]);
+        const float ceilingValue = ceilingGain.getNextValue();
+        // Constant integer latency in every clipper/quality state. Oversampling
+        // objects and frame storage are allocated only in prepareToPlay.
+        for (int c = 0; c < 2; ++c) clipFrame.setSample (c, 0, y[c] / ceilingValue);
+        auto frame = juce::dsp::AudioBlock<float> (clipFrame);
+        auto up = clipOS->processSamplesUp (frame);
+        for (size_t c = 0; c < up.getNumChannels(); ++c)
+            for (size_t n = 0; n < up.getNumSamples(); ++n)
+                up.setSample ((int) c, (int) n, drm::softClip (up.getSample ((int) c, (int) n)));
+        clipOS->processSamplesDown (frame);
+        const float q = qualityMix.getNextValue(), cl = clipMix.getNextValue();
+        for (int c = 0; c < 2; ++c)
+        {
+            const float plain = wetAlign[c].process (y[c]);
+            const float clip1 = clipAlign[c].process (drm::softClip (y[c] / ceilingValue) * ceilingValue);
+            const float clip4 = clipFrame.getSample (c, 0) * ceilingValue;
+            const float clipped = (1.0f - q) * clip1 + q * clip4;
+            y[c] = plain * (1.0f - cl) + clipped * cl;
+        }
+        if (modeWarmup > 0 && --modeWarmup == 0 && requestedMode == lastMode)
+            modeDryMix.setTargetValue (0.0f);
+        const float modeDry = modeDryMix.getNextValue();
+        for (int c = 0; c < 2; ++c) y[c] = y[c] * (1.0f - modeDry) + dry[c] * modeDry;
 
         // bypass com crossfade (mantem a latencia)
         if (bypassMix != bypTarget)
@@ -267,11 +344,16 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
 
         io[0][i] = y[0];
         if (numCh > 1) io[1][i] = y[1];
-        pkOut[0] = juce::jmax (pkOut[0], std::abs (meterY[0]));
-        pkOut[1] = juce::jmax (pkOut[1], std::abs (meterY[1]));
+        pkOut[0] = juce::jmax (pkOut[0], std::abs (y[0]));
+        pkOut[1] = juce::jmax (pkOut[1], std::abs (y[1]));
+        if (spectral)
+        {
+            specOut[0].process (y[0]);
+            if (numCh > 1) specOut[1].process (y[1]);
+        }
 
         // ---- coluna do display ----
-        if (++colCount >= colSamples)
+        if (analyse && ++colCount >= colSamples)
         {
             colCount = 0;
             if (numCh < 2) { acc.in[1] = acc.in[0]; acc.out[1] = acc.out[0]; acc.gain[1] = acc.gain[0];
@@ -289,11 +371,11 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
         const int src = numCh < 2 ? 0 : c;
         for (int b = 0; b < numBands; ++b)
         {
-            bandIn[c][b].store (juce::jmax (bandIn[c][b].load(), specIn[src].peak[b]));
-            bandOut[c][b].store (juce::jmax (bandOut[c][b].load(), specOut[src].peak[b]));
+            publishPeak (bandIn[c][b], specIn[src].peak[b]);
+            publishPeak (bandOut[c][b], specOut[src].peak[b]);
         }
-        meterIn[c].store (juce::jmax (meterIn[c].load(), pkIn[c]));
-        meterOut[c].store (juce::jmax (meterOut[c].load(), pkOut[c]));
+        publishPeak (meterIn[c], pkIn[c]);
+        publishPeak (meterOut[c], pkOut[c]);
     }
     gainNow[0].store (env[0].current());
     gainNow[1].store (linked ? env[0].current() : env[1].current());
@@ -323,17 +405,21 @@ void DRMLevelerAudioProcessor::setView (int v)
 
 void DRMLevelerAudioProcessor::switchAB (int slot)
 {
-    if (slot == abSlot) return;
+    if (slot < 0 || slot > 1 || slot == abSlot) return;
     const int view = getView();
+    apvts.state.setProperty ("preset", currentPreset, nullptr);
     abStates[abSlot] = apvts.copyState();
+    if (! abStates[slot].isValid()) abStates[slot] = apvts.copyState();
     abSlot = slot;
     if (abStates[slot].isValid())
         apvts.replaceState (abStates[slot].createCopy());
+    currentPreset = juce::jlimit (0, (int) drmpresets::list().size() - 1, (int) apvts.state.getProperty ("preset", 0));
     setView (view);
 }
 
 void DRMLevelerAudioProcessor::copyToOtherSlot()
 {
+    apvts.state.setProperty ("preset", currentPreset, nullptr);
     abStates[1 - abSlot] = apvts.copyState();
 }
 
@@ -346,6 +432,16 @@ void DRMLevelerAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     state.setProperty ("preset", currentPreset, nullptr);
+    state.setProperty ("abSlot", abSlot, nullptr);
+    juce::ValueTree slots ("ABSlots");
+    for (int i = 0; i < 2; ++i)
+    {
+        juce::ValueTree slotTree ("Slot");
+        auto snapshot = i == abSlot ? apvts.copyState() : abStates[i].createCopy();
+        if (snapshot.isValid()) slotTree.addChild (snapshot, -1, nullptr);
+        slots.addChild (slotTree, -1, nullptr);
+    }
+    state.addChild (slots, -1, nullptr);
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -356,10 +452,48 @@ void DRMLevelerAudioProcessor::setStateInformation (const void* data, int sizeIn
         if (xml->hasTagName (apvts.state.getType()))
         {
             auto vt = juce::ValueTree::fromXml (*xml);
-            currentPreset = (int) vt.getProperty ("preset", 0);
+            currentPreset = juce::jlimit (0, (int) drmpresets::list().size() - 1, (int) vt.getProperty ("preset", 0));
+            abSlot = juce::jlimit (0, 1, (int) vt.getProperty ("abSlot", 0));
+            auto slots = vt.getChildWithName ("ABSlots");
+            for (int i = 0; i < 2; ++i)
+                abStates[i] = slots.getChild (i).getChild (0).createCopy();
+            vt.removeChild (slots, nullptr);
+            // Old sessions have no new parameters. Explicit defaults prevent a
+            // prior session's extra settings from leaking into legacy projects.
+            for (auto* pid : { mix, boostMax, cutMax, measureInput, adaptive, oversample, ceiling })
+            {
+                bool found = false;
+                for (auto child : vt) if (child["id"].toString() == pid) found = true;
+                if (! found)
+                {
+                    auto* param = apvts.getParameter (pid);
+                    juce::ValueTree child ("PARAM"); child.setProperty ("id", pid, nullptr);
+                    child.setProperty ("value", param->convertFrom0to1 (param->getDefaultValue()), nullptr);
+                    vt.addChild (child, -1, nullptr);
+                }
+            }
             apvts.replaceState (vt);
             if (! apvts.state.hasProperty ("view")) setView (1);
         }
+}
+
+juce::String DRMLevelerAudioProcessor::parameterSignature() const
+{
+    juce::String result;
+    for (auto* p : getParameters()) result += juce::String (p->getValue(), 7) + ";";
+    return result;
+}
+
+void DRMLevelerAudioProcessor::markPresetClean()
+{
+    apvts.state.setProperty ("preset", currentPreset, nullptr);
+    apvts.state.setProperty ("presetSignature", parameterSignature(), nullptr);
+}
+
+bool DRMLevelerAudioProcessor::isPresetModified() const
+{
+    const auto saved = apvts.state.getProperty ("presetSignature").toString();
+    return saved.isNotEmpty() && saved != parameterSignature();
 }
 
 juce::AudioProcessorEditor* DRMLevelerAudioProcessor::createEditor()
