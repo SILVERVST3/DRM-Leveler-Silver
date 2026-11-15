@@ -180,6 +180,8 @@ DRMLevelerAudioProcessorEditor::DRMLevelerAudioProcessorEditor (DRMLevelerAudioP
         l->setFont (juce::Font (juce::FontOptions (11.0f)));
         l->setColour (juce::Label::textColourId, silver::navySoft);
     }
+    timeLabel.setColour (juce::Label::textColourId, silver::lineLt);
+    sidechainStatus.setColour (juce::Label::textColourId, silver::lineLt);
     timeLabel.setJustificationType (juce::Justification::centred);
     // The UI is the only FIFO consumer; discard the history queued before opening.
     DisplayColumn discarded[256];
@@ -338,7 +340,7 @@ void DRMLevelerAudioProcessorEditor::paintContent (juce::Graphics& g)
     g.drawText ("LEVELING", 346, 344, 270, 14, juce::Justification::centred);
     g.drawText ("ENVELOPE", 630, 344, 290, 14, juce::Justification::centred);
     g.drawText ("GAIN LIMITS / PARALLEL / QUALITY", 140, 604, 420, 14, juce::Justification::centredLeft);
-    g.drawText ("OUTPUT METERS: FINAL L/R", 720, 582, 210, 12, juce::Justification::centredRight);
+    g.drawText ("FINAL L/R", 942, 594, 108, 14, juce::Justification::centred);
 }
 
 void DRMLevelerAudioProcessorEditor::refreshAll()

@@ -251,7 +251,7 @@ public:
         g.setColour (silver::display.withAlpha (0.85f));
         g.fillRect (0, getHeight() - 18, getWidth(), 18);
         g.setColour (silver::lineLt);
-        g.drawText (juce::String (peakDb, 0), 0, getHeight() - 18, getWidth(), 18, juce::Justification::centred);
+        g.drawText (juce::String (juce::roundToInt (peakDb)), 0, getHeight() - 18, getWidth(), 18, juce::Justification::centred);
         if (clipped)
         {
             g.setColour (juce::Colour (0xffdb4e45));

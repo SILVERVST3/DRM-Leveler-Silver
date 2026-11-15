@@ -89,6 +89,36 @@ void meteringAndModes()
         }
     }
 }
+void neutralModeTransitions()
+{
+    for (int size : { 17, 64, 511 })
+    {
+        DRMLevelerAudioProcessor p; neutral (p); p.prepareToPlay (48000, size);
+        juce::AudioBuffer<float> audio (2, size); juce::MidiBuffer midi;
+        const int latency = p.getLatencySamples();
+        for (int block = 0; block < 180; ++block)
+        {
+            if (block == 30) set (p, "mode", 2);
+            if (block == 60) set (p, "mode", 0);
+            if (block == 90) set (p, "mode", 1);
+            if (block == 120) set (p, "mode", 2);
+            auto input = [] (int channel, int time)
+            {
+                return channel == 0 ? 0.4f * std::sin (time * 0.13f) : 0.5f * std::cos (time * 0.07f);
+            };
+            for (int i = 0; i < size; ++i)
+                for (int c = 0; c < 2; ++c) audio.setSample (c, i, input (c, block * size + i));
+            p.processBlock (audio, midi);
+            for (int i = 0; i < size; ++i)
+                for (int c = 0; c < 2; ++c)
+                {
+                    const int time = block * size + i - latency;
+                    const float expected = time < 0 ? 0 : input (c, time);
+                    require (std::abs (audio.getSample (c, i) - expected) < 1.0e-5f, "Neutral mode transition introduced a discontinuity");
+                }
+        }
+    }
+}
 void oversamplingAlias()
 {
     double aliases[2] {};
@@ -156,15 +186,39 @@ int main (int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI gui;
     try
     {
-        latencyAndParallel(); monoSidechain(); meteringAndModes(); oversamplingAlias(); stateRoundTrip();
+        latencyAndParallel(); monoSidechain(); meteringAndModes(); neutralModeTransitions(); oversamplingAlias(); stateRoundTrip();
         if (argc == 3 && juce::String (argv[1]) == "--render")
         {
             DRMLevelerAudioProcessor p; p.prepareToPlay (48000, 64);
             std::unique_ptr<juce::AudioProcessorEditor> editor (p.createEditor());
-            auto image = editor->createComponentSnapshot (editor->getLocalBounds());
-            juce::File file (juce::String::fromUTF8 (argv[2])); file.deleteFile();
-            auto stream = file.createOutputStream();
-            require (stream != nullptr && juce::PNGImageFormat().writeImageToStream (image, *stream), "Could not render editor preview");
+            // Drive the actual processor and timer so the preview includes a
+            // representative history rather than an empty display.
+            juce::AudioBuffer<float> audio (2, 64); juce::MidiBuffer midi;
+            for (int block = 0; block < 2400; ++block)
+            {
+                for (int i = 0; i < 64; ++i)
+                {
+                    const int sample = block * 64 + i;
+                    const int beat = sample / 12000;
+                    const double t = (sample % 12000) / 48000.0;
+                    const float amplitude = 0.15f + 0.12f * (beat % 6);
+                    const float x = amplitude * (float) (std::exp (-t * 32.0) * std::sin (2.0 * juce::MathConstants<double>::pi * 170.0 * t));
+                    audio.setSample (0, i, x); audio.setSample (1, i, x * 0.9f);
+                }
+                p.processBlock (audio, midi);
+            }
+            juce::Thread::sleep (40);
+            juce::Timer::callPendingTimersSynchronously();
+            const juce::File baseFile (juce::String::fromUTF8 (argv[2]));
+            for (int width : { 1060, 795, 1908 })
+            {
+                editor->setSize (width, juce::roundToInt (width * 760.0 / 1060.0));
+                auto image = editor->createComponentSnapshot (editor->getLocalBounds());
+                const auto file = width == 1060 ? baseFile : baseFile.getSiblingFile (baseFile.getFileNameWithoutExtension()
+                    + "-" + juce::String (width) + ".png");
+                file.deleteFile(); auto stream = file.createOutputStream();
+                require (stream != nullptr && juce::PNGImageFormat().writeImageToStream (image, *stream), "Could not render editor preview");
+            }
         }
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

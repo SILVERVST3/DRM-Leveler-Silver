@@ -185,7 +185,7 @@ void DRMLevelerAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, j
                 det[c].reset(); env[c].reset();
                 audioDelay[c].reset(); detDelay[c].reset();
             }
-            modeWarmup = latency;
+            modeWarmup = latency + 1;
         }
     }
     else if (modeWarmup <= 0) modeDryMix.setTargetValue (0.0f);
